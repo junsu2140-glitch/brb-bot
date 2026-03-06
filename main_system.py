@@ -21,21 +21,47 @@ load_dotenv()
 current_path = os.path.dirname(os.path.abspath(__file__))
 creds_path = os.path.join(current_path, "creds.json")
 
-with open('/root/brb-bot/creds.json', 'r') as f:
-    creds_info = json.load(f)
+gc = None
+
+if not os.path.exists(creds_path):
+    print(f"❌ 파일을 찾을 수 없습니다: {creds_path}")
+    print("파일 이름을 'creds.json'으로 확인하고 같은 폴더에 넣어주세요.")
+else:
+    try:
+        with open(creds_path, 'r', encoding='utf-8') as f:
+            creds_info = json.load(f)
+        raw_key = creds_info['private_key']
     
-creds_info['private_key'] = creds_info['private_key'].replace('\\n', '\n')
+        creds_info['private_key'] = creds_info['private_key'].replace('\\n', '\n').replace('\n', '\n')
 
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-    ]
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+
+        gc = gspread.service_account_from_dict(creds_info, scopes=scope)
+
+    except Exception as e:
+        print(f"❌ 인증 과정에서 오류 발생: {e}")
+
+try:
+    # 딕셔너리 방식이 아닌 파일 경로 방식으로 직접 인증 시도
+    gc = gspread.service_account(filename=creds_path, scopes=scope)
+    print("✅ 파일 직접 인증 성공!")
+except Exception as e:
+    print(f"❌ 직접 인증도 실패: {e}")
 
 
 
-gc = gspread.service_account_from_dict(creds_info, scopes=scope)
+if gc is not None:
+    try:
+        doc = gc.open("[관리자용] BRB 티어 리스트")
+    except Exception as e:
+        print(f"❌ 시트를 여는 중 오류 발생: {e}")
+        print("💡 팁: 서비스 계정 이메일을 시트에 '편집자'로 공유했는지 확인하세요.")
+else:
+    print("⚠️ 인증에 실패하여 시트를 열 수 없습니다. 위쪽 에러 메시지를 확인하세요.")
 
-doc = gc.open("[관리자용] BRB 티어 리스트")
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -695,7 +721,7 @@ async def create_scrim(interaction: discord.Interaction, games: app_commands.Cho
 
 @bot.tree.context_menu(name="내전시작")
 async def start_scrim_context(interaction: discord.Interaction, message: discord.Message):
-    
+    global doc
     msg_id = message.id
 
     players = scrim_data[msg_id]
