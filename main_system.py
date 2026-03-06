@@ -14,18 +14,26 @@ import asyncio
 from typing import Optional
 import os
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
+
+current_path = os.path.dirname(os.path.abspath(__file__))
+creds_path = os.path.join(current_path, "creds.json")
+
+with open('/root/brb-bot/creds.json', 'r') as f:
+    creds_info = json.load(f)
+    
+creds_info['private_key'] = creds_info['private_key'].replace('\\n', '\n')
 
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
     ]
 
-current_path = os.path.dirname(os.path.abspath(__file__))
-creds_path = os.path.join(current_path, "creds.json")
 
-gc = gspread.service_account(filename=creds_path, scopes=scope)
+
+gc = gspread.service_account_from_dict(creds_info, scopes=scope)
 
 doc = gc.open("[관리자용] BRB 티어 리스트")
 

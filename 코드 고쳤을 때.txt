@@ -1,0 +1,4 @@
+github에 push하거나 새로 올리고
+서버 터미널에서 cd 파일명, git pull origin main, pm2 restart 0 순으로 입력
+터미널 접속 방법은 root 입력후 비밀번호 붙여넣기
+서버 비밀번호: 	fp60WT@F
