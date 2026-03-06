@@ -1,43 +1,55 @@
 import discord
 from discord import app_commands, TextChannel, ui, ButtonStyle, Member
 from discord.ui import Button, View
-from discord.ext import commands, tasks  # 봇 명령어 및 반복 작업(초기화 등)용
+from discord.ext import commands, tasks  
 from datetime import datetime, date
-import random                            # 경험치 랜덤 지급용
-# [DB 관리] - 데이터 저장용 (경험치, 출석 기록 등)
-import aiosqlite   # 비동기 SQLite (데이터베이스)
-# [구글 스프레드시트 연동] - 내전 기록 및 데이터 쓰기용
+import random                         
+import aiosqlite   
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-# [웹 대시보드 구축] - FastAPI 활용
 from fastapi import FastAPI
-import uvicorn  # 웹 서버 실행용
-import threading    # 봇과 웹 서버를 동시에 돌리기 위함
-import asyncio      # 비동기 작업 처리용
+import uvicorn  
+import threading    
+import asyncio    
 from typing import Optional
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
+scope = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+    ]
+
+current_path = os.path.dirname(os.path.abspath(__file__))
+creds_path = os.path.join(current_path, "creds.json")
+
+gc = gspread.service_account(filename=creds_path, scopes=scope)
+
+doc = gc.open("[관리자용] BRB 티어 리스트")
+
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.all()
         super().__init__(command_prefix='!', intents=intents)
     async def setup_hook(self):
+        give_voice_exp.start()  # 음성 경험치 루프 시작
+        monthly_reset_loop.start()  # 월별 초기화 루프 시작
         # 작성한 슬래시 명령어를 디스코드 서버에 등록(동기화)합니다.
         await self.tree.sync()
         print("슬래시 명령어 동기화 완료")
 
 bot = MyBot()
 DB_NAME = "attendance.db"
-voice_user = set() 
+voice_user = set()
 multi_role = {
-    "역할1": 1,
-    "역할2": 2,
-    "역할3": 3,
+    1470331131315355760: 1, #2배 3시간
+    1470717115135819912: 2, #2배 6시간
+    1470713107029561456: 3, #3배 24시간
 }
-attendance_channel = 1383387649917718610
+attendance_channel = 1383387649917718610 # 출석체크 채널
+lvl_channel = 12345678901234567890 # 레벨업 채널
 chat_cooldown = {}
 
 
@@ -51,25 +63,40 @@ def get_user_multiplier(member):
 class Dropdown(ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="2배", description="경험치를 2배로 얻습니다. 가격: 5000 EXP", emoji="🎃"),
-            discord.SelectOption(label="3배", description="경험치를 3배로 얻습니다. 가격: 10000 EXP", emoji="💊"),
-            discord.SelectOption(label="차감권", description="경고를 차감합니다. 가격: 15000 EXP", emoji="😡"),
+            discord.SelectOption(label="2배 부스트 3시간 ON", description="경험치를 3시간동안 2배 받습니다. [ 800🥕]", emoji="💊"),
+            discord.SelectOption(label="2배 부스트 6시간 ON", description="경험치를 6시간동안 2배 받습니다. [ 1500🥕]", emoji="🧪"),
+            discord.SelectOption(label="3배 부스트 24시간 ON", description="경험치를 24시간동안 3배 받습니다. [ 5000🥕]", emoji="⚗️"),
+            discord.SelectOption(label="내전 작은 경고 차감권", description="내전 작은 경고 차감권 [ 60레벨 이상 구매 가능 40000🥕]", emoji="💦"),
+            discord.SelectOption(label="내전 큰 경고 차감권", description="내전 큰 경고 차감권 [ 60레벨 이상 구매 가능 100000🥕]", emoji="💢"),
+            discord.SelectOption(label="내전 참전 금지 해제권", description="내전 2주 불참 해지권 [ 60레벨 이상 구매 가능 20000🥕]", emoji="💥"),
         ]
-        super().__init__(placeholder="토끼의 상점에 오신 것을 환영합니다!", options=options)
+        my_holder = "MR. CARROT의 상점에 오신것을 환영합니다🐰"
+        super().__init__(placeholder= my_holder, options=options)
     async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "2배":
+        limit_lvl = 0
+        if self.values[0] == "2배 부스트 3시간 ON":
+            price = 800
+            limit_lvl = 0
+            role_id = 1470331131315355760  # 2배 역할 넣기
+        elif self.values[0] == "2배 부스트 6시간 ON":
+            price = 1500
+            limit_lvl = 0
+            role_id = 1470717115135819912  # 2배 역할 넣기
+        elif self.values[0] == "3배 부스트 24시간 ON":
             price = 5000
-        elif self.values[0] == "3배":
-            price = 10000
-        elif self.values[0] == "차감권":
-            price = 15000
+            limit_lvl = 0
+            role_id = 1470713107029561456  # 3배 역할 넣기
+        elif self.values[0] == "내전 작은 경고 차감권":
+            price = 40000
+            limit_lvl = 60
+        elif self.values[0] == "내전 큰 경고 차감권":
+            price = 100000
+            limit_lvl = 60
+        elif self.values[0] == "내전 참전 금지 해제권":
+            price = 20000
+            limit_lvl = 60
         user_id = interaction.user.id
-        if price == 5000:
-            role_id = 1479067128366764157  # 2배 역할 ID로 변경
-        elif price == 10000:
-            role_id = 1479067238324768939  # 3배 역할 ID로 변경
-        elif price == 15000:
-            role_id = 1479067275792224439  # 차감권 역할 ID로 변경
+        
         async with aiosqlite.connect(DB_NAME) as db:
             # 1. 먼저 유저의 현재 경험치가 충분한지 확인 (SELECT)
             async with db.execute("SELECT experience FROM attendance WHERE user_id = ?", (user_id,)) as cursor:
@@ -81,6 +108,18 @@ class Dropdown(ui.Select):
                     await interaction.message.delete()
                 else:
                     return
+            # 유저의 레벨이 충분한지 확인
+            if row:
+                level, _, _ = calculate_level(row[0])
+            else:
+                level = 0
+            if level < limit_lvl :
+                await interaction.response.send_message("❌ 레벨이 부족합니다!", ephemeral=True)
+                if interaction.message:
+                    await interaction.message.delete()
+                else:
+                    return
+                
         yes = Button(label="응", style=ButtonStyle.blurple)
         no = Button(label="아니", style=ButtonStyle.red)
         view=View()
@@ -94,26 +133,27 @@ class Dropdown(ui.Select):
                 if not row: await interaction.response.send_message("❌ 데이터베이스에 사용자 정보가 없습니다.", ephemeral=True)
                 if interaction.guild:
                     role = interaction.guild.get_role(role_id)
-                await interaction.response.send_message("구매가 완료되었습니다!")
+                await interaction.response.send_message("구매가 완료되었습니다!", ephemeral=True)
                 await db.execute("UPDATE attendance SET experience = experience - ? WHERE user_id = ?", (price, user_id))
                 await db.commit()
-                if interaction.message:
-                    if isinstance(interaction.channel, discord.TextChannel):
-                        await interaction.channel.purge(limit=3)
-                if isinstance(interaction.user, discord.Member) and role:
-                    await interaction.user.add_roles(role)
-                    await asyncio.sleep(7200)
-                    await interaction.user.remove_roles(role)
 
+                if isinstance(interaction.user, discord.Member) and role and price == 800:
+                    await interaction.user.add_roles(role)
+                    await asyncio.sleep(10800)
+                    await interaction.user.remove_roles(role)
+                elif isinstance(interaction.user, discord.Member) and role and price == 1500 :
+                    await interaction.user.add_roles(role)
+                    await asyncio.sleep(21600)
+                    await interaction.user.remove_roles(role)
+                elif isinstance(interaction.user, discord.Member) and role and price == 5000 :
+                    await interaction.user.add_roles(role)
+                    await asyncio.sleep(86400)
+                    await interaction.user.remove_roles(role)
                 else:
                     return
         async def no_callback(interaction: discord.Interaction):
-            await interaction.response.send_message("구매가 취소되었습니다.")
-            if interaction.message:
-                if isinstance(interaction.channel, discord.TextChannel):
-                    await interaction.channel.purge(limit=3)
-            else:
-                return
+            await interaction.response.send_message("구매가 취소되었습니다.", ephemeral=True)
+
 
         yes.callback = yes_callback
         no.callback = no_callback
@@ -126,8 +166,8 @@ class DropdownView(discord.ui.View):
 # 명령어 부분
 @bot.tree.command(name="상점", description="경험치 상점을 엽니다.")
 async def open_shop(interaction: discord.Interaction):
-    embed = discord.Embed(title="🏪 경험치 포인트 상점", color=discord.Color.gold())
-    embed.description = "경험치를 소모하여 특별한 아이템을 구매하세요!"
+    embed = discord.Embed(title="🏪 당근 포인트 상점", color=discord.Color.gold())
+    embed.description = "경험치를 소모하여 특별한 아이템을 구매하세요."
     view = DropdownView()
     
     await interaction.response.send_message(embed=embed, view=view)
@@ -260,7 +300,10 @@ async def attendance(interaction: discord.Interaction):
         old_level, _, _ = calculate_level(base_exp)
         new_level, _, _ = calculate_level(new_exp)
         if new_level > old_level:
-            await interaction.followup.send(f"🎉 축하합니다! {interaction.user.mention}님이 레벨업 하셨습니다! (Lv. {old_level} → Lv. {new_level})", ephemeral = True)
+            LC = bot.get_channel(lvl_channel)
+            if isinstance(LC, TextChannel):
+                await interaction.followup.send(f"🎉 축하합니다! {interaction.user.mention}님이 레벨업 하셨습니다! (Lv. {old_level} → Lv. {new_level})", ephemeral = True)
+            
 
         # 3. 데이터 업데이트 (물음표 6개 매칭 완료)
         await db.execute("""
@@ -274,14 +317,13 @@ async def attendance(interaction: discord.Interaction):
     VALUES (?, ?, 1)
     ON CONFLICT(user_id, month) DO UPDATE SET count = count + 1
 """, (user_id, current_month))
-
-        
-
         await db.commit()
+
+
         embed2 = discord.Embed(title=f"✅ 출석체크 하셨습니다!", color=discord.Color.blue(), description= f"출석체크 보상으로 {gain_exp} EXP를 얻었습니다!")
         embed2.add_field(name="연속 출석", value=f"🔥 {new_streak}일차", inline=False)
         embed2.add_field(name="누적 출석", value=f"📊 {new_total}회", inline=True)
-    AC = bot.get_channel(attendance_channel)
+    AC = interaction.channel
     if isinstance(AC, TextChannel):
         await AC.send(embed=embed2)
     else: await interaction.followup.send("오류", ephemeral=True)  
@@ -486,6 +528,7 @@ async def monthly_history(interaction: discord.Interaction, user: Optional[disco
     month="수정할 달을 입력하세요 (예: 2026-01)",
     count="설정할 출석 횟수를 입력하세요."
 )
+
 @app_commands.checks.has_permissions(administrator=True)
 async def edit_monthly_stats(interaction: discord.Interaction, user: discord.Member, month: str, count: int):
     await interaction.response.defer(ephemeral=True)
@@ -509,6 +552,199 @@ async def edit_monthly_stats(interaction: discord.Interaction, user: discord.Mem
         except Exception as e:
             await interaction.followup.send(f"❌ 수정 중 오류 발생: {e}", ephemeral=True)
 
+# 내전 기능에 관한 코드
+scrim_players = []
+scrim_data = {}
+scrim_limit = {}
+scrim_name = ""
+
+class ScrimView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @ui.button(label="참가하기", style=ButtonStyle.blurple, custom_id="join_scrim")
+    async def join_scrim(self, interaction: discord.Interaction, button: ui.Button):
+        msg_id = interaction.message.id if interaction.message else None
+
+        if msg_id not in scrim_data:
+            await interaction.response.send_message("❌ 종료된 내전이거나 데이터를 찾을 수 없습니다.", ephemeral=True)
+            return
+        
+        players = scrim_data[msg_id]
+        limit = scrim_limit[msg_id]
+
+        if interaction.user.id in players:
+            await interaction.response.send_message("❌ 이미 참가하셨습니다!", ephemeral=True)
+            return
+
+        players.append(interaction.user.id)
+        
+        if not interaction.message or not interaction.message.embeds:
+            await interaction.response.send_message("❌ 오류가 발생했습니다.", ephemeral=True)
+            return
+        embed = interaction.message.embeds[0]
+    
+        if embed.description:
+            new_desc = embed.description.split("현재 참가자 수: ")[0] + f"현재 참가자 수: {len(players)}/{limit}"
+            embed.description = new_desc
+
+        if len(players) >= limit:
+            for item in self.children[:]:
+                if isinstance(item, ui.Button) and item.custom_id in ["join_scrim", "leave_scrim"]:
+                    self.remove_item(item)
+            close_button = ui.Button(label="모집 마감", style=ButtonStyle.gray, disabled=True)
+            self.add_item(close_button)
+
+            embed.title = "🚫 모집이 마감되었습니다."
+
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+        await interaction.followup.send(f"✅ {interaction.user.mention}님, 내전 참가하셨습니다!", ephemeral=True)
+
+    @ui.button(label="취소하기", style=ButtonStyle.red, custom_id="leave_scrim")
+    async def cancel_scrim(self, interaction: discord.Interaction, button: ui.Button):
+
+        msg_id = interaction.message.id if interaction.message else None
+        if msg_id not in scrim_data: return
+
+        players = scrim_data[msg_id]
+        limit = scrim_limit[msg_id]
+        if interaction.user.id not in players:
+            await interaction.response.send_message("❌ 참가하지 않으셨습니다!", ephemeral=True)
+            return
+        
+        players.remove(interaction.user.id)
+        if interaction.message and interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            if embed.description:
+                new_desc = embed.description.split("현재 참가자 수: ")[0] + f" 현재 참가자 수: {len(players)}/{limit}"
+                embed.description = new_desc
+                await interaction.message.edit(embed=embed, view=self)
+
+        await interaction.followup.send(f"✅ {interaction.user.mention}님, 내전 참가 취소하셨습니다!", ephemeral=True)
+
+    @ui.button(label="명단 확인", style=ButtonStyle.green, custom_id="view_players")
+    async def view_players(self, interaction: discord.Interaction, button: ui.Button):
+        msg_id = interaction.message.id if interaction.message else None
+        if msg_id not in scrim_data:
+            return await interaction.response.send_message("❌ 종료된 내전이거나 데이터를 찾을 수 없습니다.", ephemeral=True)
+        
+        players = scrim_data[msg_id]
+        if not players:
+            return await interaction.response.send_message("현재 참가자가 없습니다.", ephemeral=True)
+        
+        mentions = "\n".join([f"- <@{p_id}>" for p_id in players])
+
+        embed = discord.Embed(title="📋 참가자 명단", description=mentions, color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="내전생성", description="내전을 생성합니다. 참가자들은 /내전참가 명령어로 등록할 수 있습니다.")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.choices(prize=[
+    app_commands.Choice(name="황금 당근 티켓", value="황금 당근 티켓"),
+    app_commands.Choice(name="은 당근 티켓", value="은 당근 티켓"),
+    app_commands.Choice(name="기프티콘", value="기프티콘"),
+])
+@app_commands.choices(games=[
+    app_commands.Choice(name="협곡", value="협곡"),
+    app_commands.Choice(name="발로란트", value="발로란트"),
+    app_commands.Choice(name="아수라장", value="아수라장"),
+    app_commands.Choice(name="롤토체스", value="롤토체스"),
+])
+async def create_scrim(interaction: discord.Interaction, games: app_commands.Choice[str], prize: app_commands.Choice[str], day: str, time: str):
+
+    global scrim_name
+    scrim_name = games.value
+    if games.value == "협곡":
+        limit = 20
+        color = discord.Color.green()
+        image_url = "https://e7.pngegg.com/pngimages/752/220/png-clipart-league-of-legends-computer-icons-riot-games-league-of-legends-game-logo-thumbnail.png"
+    elif games.value == "발로란트":
+        limit = 10
+        color = discord.Color.red()
+        image_url = "https://i.namu.wiki/i/Rf1dgn0IGRUraSmcIP3QLUSUtD8acVY63qFFPg2sRzC13lDFkdvLxQ4FZ_4TAfHNq-DELZGAIPDLiDyNx3Ojpw.svg"
+    elif games.value == "아수라장":
+        limit = 10
+        color = discord.Color.blue()
+        image_url = "https://i.namu.wiki/i/vc84KQM17eS9aUoG5igiGk5cTDVfMJa3n0gs_a8R-qeif0tVD3hKkDgh-iLHH4zBt-o_TT4DEExDA12LU39veA.webp"
+    elif games.value == "롤토체스":
+        limit = 8
+        color = discord.Color.purple()
+        image_url = "https://i.namu.wiki/i/mOmhZXL-wsMUG919w1Dwd34dOHqdZZgBXMCsGQOLRP-GyZ3l-vOi1xElWgVZqR1wn12qN60SulfMVMuPZ64GVA.webp"
+    embed = discord.Embed(title=f"{games.name} 내전 모집중!", description=f"지금부터 {games.name} 내전을 모집합니다. \n 현재 참가자 수: {len(scrim_players)}/{limit}", color=color)
+    embed.add_field(name="참가 방법", value=f"참가 버튼으로 참가할 수 있습니다.", inline=False)
+    embed.add_field(name="내전 시간", value=f"{day}일 {time}시에 시작합니다!", inline=False)
+    embed.add_field(name="내전 보상", value=f"이번 내전의 보상은 {prize.name}입니다.", inline=False)
+    embed.add_field(name="주의 사항", value="내전 참가자들은 내전 시작 10분 전까지 대기실에 모여야합니다.", inline=False)
+    embed.set_thumbnail(url=image_url)
+    embed.set_footer(text="참가자 수가 최대 인원에 도달하면 취소가 불가능합니다.")
+    
+    view = ScrimView()
+    await interaction.response.send_message(embed=embed, view=view)
+
+    msg = await interaction.original_response()
+    scrim_data[msg.id] = []
+    scrim_limit[msg.id] = limit
+
+@bot.tree.context_menu(name="내전시작")
+async def start_scrim_context(interaction: discord.Interaction, message: discord.Message):
+    
+    msg_id = message.id
+
+    players = scrim_data[msg_id]
+    if not players:
+        await interaction.response.send_message("❌ 참가자가 없는 내전은 시작할 수 없습니다.", ephemeral=True)
+        return
+    if scrim_name == "협곡" :
+        s_name ="롤 데이터"
+    elif scrim_name == "발로란트" :
+        s_name ="발로 데이터"
+    else :
+        return await interaction.response.send_message("내전이 시작되었습니다.", ephemeral=True)
+    s_sheet = doc.worksheet(s_name)
+    t_sheet = doc.worksheet("경매장")
+    name_list = []
+
+    for p_id in players :
+        cell = s_sheet.find(str(p_id))
+        if cell :
+            row_data = s_sheet.row_values(cell.row)
+            name_list.append([row_data[1]])
+
+    if name_list:
+        # 데이터가 들어갈 범위 계산 (K열 2행부터 데이터 개수만큼)
+        # 예: 10명이면 K2:K11 범위가 됩니다.
+        end_row = 1 + len(name_list)
+        target_range = f"K2:K{end_row}"
+        
+        # 4. update 함수를 사용하여 한 번에 전송
+        t_sheet.update(range_name=target_range, values=name_list)
+    await interaction.response.send_message(f"✅ {scrim_name} 경매 준비 완료! 명단이 업데이트되었습니다.", ephemeral=True)
+
+#내전 승패 기록 기능 추가
+
+
+# 사람들 ID 얻어내기
+
+@bot.tree.command(name="정보얻기", description="서버원의 사용자 id를 가져옵니다.")
+@app_commands.checks.has_permissions(administrator=True)
+async def info_take(interaction: discord.Interaction) :
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if not guild :
+        await interaction.response.send_message("서버에서 사용가능")
+        return
+    try :
+        member_data = [[ member.display_name, str(member.id)] for member in guild.members if not member.bot]
+        target_sheet = doc.worksheet("서버 전체 데이터")
+        end_row = 1 + len(member_data)
+        target_range = f"E2:F{end_row}"
+        target_sheet.update(range_name=target_range, values=member_data)
+    except Exception as e:
+        await interaction.followup.send(f"오류 {e}")
+
+
+
+# 봇 실행
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 if TOKEN:
