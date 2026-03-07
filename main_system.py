@@ -2,7 +2,7 @@ import discord
 from discord import app_commands, TextChannel, ui, ButtonStyle, Member
 from discord.ui import Button, View
 from discord.ext import commands, tasks  
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta, time
 import random                         
 import aiosqlite   
 import gspread
@@ -17,6 +17,10 @@ from dotenv import load_dotenv
 import json
 
 load_dotenv()
+
+
+kst = timezone(timedelta(hours=9))
+reset_time = time(hour=0, minute=0, second=0, tzinfo=kst)
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 creds_path = os.path.join(current_path, "creds.json")
@@ -83,7 +87,7 @@ multi_role = {
     1470713107029561456: 3, #3배 24시간
 }
 attendance_channel = 1383387649917718610 # 출석체크 채널
-lvl_channel = 12345678901234567890 # 레벨업 채널
+lvl_channel = 1470241337591992381 # 레벨업 채널
 chat_cooldown = {}
 
 
@@ -159,7 +163,7 @@ class Dropdown(ui.Select):
         view=View()
         view.add_item(yes)
         view.add_item(no)
-        await interaction.response.send_message(f"정말로 {self.values[0]} 아이템을 구매하시겠습니까?", view=view)
+        await interaction.response.send_message(f"정말로 {self.values[0]} 아이템을 구매하시겠습니까?", view=view, ephemeral=True)
         async def yes_callback(interaction: discord.Interaction):
             async with aiosqlite.connect(DB_NAME) as db:
                 async with db.execute("SELECT experience FROM attendance WHERE user_id = ?", (user_id,)) as cursor:
@@ -209,6 +213,7 @@ async def open_shop(interaction: discord.Interaction):
     await msg.delete(delay=180)
 
 @bot.tree.command(name="경험치추가", description="사용자에게 경험치를 추가합니다.")
+@app_commands.checks.has_permissions(administrator=True)
 async def add_experience(interaction: discord.Interaction, user: discord.User, amount: int):
     user_id = user.id
     if user_id == None:
@@ -219,6 +224,7 @@ async def add_experience(interaction: discord.Interaction, user: discord.User, a
     await interaction.response.send_message(f"✅ {user.mention}님에게 {amount} EXP를 추가했습니다!", ephemeral=True)
 
 @bot.tree.command(name="경험치차감", description="사용자에게서 경험치를 차감합니다.")
+@app_commands.checks.has_permissions(administrator=True)
 async def remove_experience(interaction: discord.Interaction, user: discord.User, amount: int):
     user_id = user.id
     if user_id == None:
@@ -274,6 +280,14 @@ async def on_ready():
             )
         ''')
         await db.commit()
+    if not monthly_reset_loop.is_running():
+        monthly_reset_loop.start()
+        print("⏰ 월간 초기화 루프가 시작되었습니다.")
+    elif monthly_reset_loop.is_running(): print("⏰ 월간 초기화 루프가 실행중입니다.")
+    if not give_voice_exp.is_running():
+        give_voice_exp.start()
+        print("채널경험치 획득 루프 시작됨")
+    elif give_voice_exp.is_running(): print("채널경험치 획득 루프 실행 중")
     if bot.user:
         print(f'준비 완료: {bot.user.name}')
     else:        print('준비 완료: 봇 사용자 정보 없음')
@@ -335,8 +349,11 @@ async def attendance(interaction: discord.Interaction):
         new_level, _, _ = calculate_level(new_exp)
         if new_level > old_level:
             LC = bot.get_channel(lvl_channel)
-            if isinstance(LC, TextChannel):
-                await interaction.followup.send(f"🎉 축하합니다! {interaction.user.mention}님이 레벨업 하셨습니다! (Lv. {old_level} → Lv. {new_level})", ephemeral = True)
+            if isinstance(LC, TextChannel) :
+                embed3 = discord.Embed(
+                    description= f"🎉 [ 신용 등급 상승 ] {interaction.user} 님이 아지트에서 뼈 빠지게 당근을 캐낸 결과, 신용 등급이 Lv.{new_level}(으)로 상승했습니다!\n💸 이제 블랙마켓에서 더 비싼 빚을 질 자격이 생겼군요. 계속 일하십시오! 🐰💼",
+                )
+                await interaction.followup.send(embed = embed3)
             
 
         # 3. 데이터 업데이트 (물음표 6개 매칭 완료)
@@ -363,7 +380,7 @@ async def attendance(interaction: discord.Interaction):
     else: await interaction.followup.send("오류", ephemeral=True)  
     # await interaction.followup.send(f"✅ {interaction.user.mention}님 출석 완료!\n🔥 연속 {new_streak}일차 | 📊 총 {new_total}회 출석 | 💰 +{gain_exp} EXP")
 
-@bot.tree.command(name="내정보", description="당신의 출석 정보를 확인합니다.")
+@bot.tree.command(name="내정보", description="당신의 정보를 확인합니다.")
 async def my_info(interaction: discord.Interaction, user: Optional [discord.User] = None):
     await interaction.response.defer()
     target_user = user if user else interaction.user
@@ -385,8 +402,8 @@ async def my_info(interaction: discord.Interaction, user: Optional [discord.User
 
     # 디스코드 임베드(Embed)로 예쁘게 출력
     embed = discord.Embed(title=f"📊 {user_name}님의 정보", color=discord.Color.blue())
-    embed.add_field(name="레벨", value=f"Lv. {lvl}", inline=True)
-    embed.add_field(name="경험치", value=f"{int(curr_exp)} / {int(max_exp)} (Total: {int(exp)})", inline=True)
+    embed.add_field(name="신용 등급", value=f"Lv. {lvl}", inline=True)
+    embed.add_field(name="당근량", value=f"Total: {int(exp)}", inline=True)
     embed.add_field(name="연속 출석", value=f"🔥 {streak}일차", inline=False)
     embed.add_field(name="누적 출석", value=f"📊 {total}회", inline=True)
     
@@ -450,30 +467,44 @@ async def on_voice_state_update(member, before, after):
 
 @tasks.loop(seconds=300)
 async def give_voice_exp():
-    guild = bot.get_guild(1383387649464729600)  # 서버 ID로 변경
+    guild = bot.get_guild(1458817501986160767)  # 서버 ID로 변경
     if not guild: return
     if not voice_user:
         return
     async with aiosqlite.connect(DB_NAME) as db:
         for user_id in voice_user:
             member = guild.get_member(user_id)
-            if not member: continue
+            if not member or not member.voice: continue
             async with db.execute(
                 "SELECT experience FROM attendance WHERE user_id = ?", 
                 (user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
-                if row:
-                    multiplier = get_user_multiplier(member)
-                    current_exp = row[0]
-                    gain_exp = int(30 * multiplier)
-                    new_exp = current_exp + gain_exp
-                    await db.execute(
-                        "UPDATE attendance SET experience = ? WHERE user_id = ?", 
-                        (new_exp, user_id)
-                    )
+                if not row: continue
+                multiplier = get_user_multiplier(member)
+                current_exp = row[0]
+                gain_exp = int(30 * multiplier)
+                new_exp = current_exp + gain_exp
+                current_level, _, _ = calculate_level(current_exp)
+                new_level, _, _ = calculate_level(new_exp)
+                await db.execute(
+                    "UPDATE attendance SET experience = ? WHERE user_id = ?", 
+                    (new_exp, user_id)
+                )
+                if new_level > current_level :
+                    LC = bot.get_channel(lvl_channel)
+                    if isinstance(LC, TextChannel):
+                        embed = discord.Embed(
+                        title="🎉 [ 신용 등급 상승 ]",
+                        description=(
+                            f"{member.mention} 님이 아지트에서 뼈 빠지게 당근을 캐낸 결과, "
+                            f"신용 등급이 **Lv.{new_level}**(으)로 상승했습니다!\n"
+                            f"💸 이제 블랙마켓에서 더 비싼 빚을 질 자격이 생겼군요. 계속 일하십시오! 🐰💼"
+                        ), color=discord.Color.dark_purple())
+                        await LC.send(embed=embed)
+            
 
-    await db.commit()
+        await db.commit()
 
 @bot.event
 async def on_message(message):
@@ -483,6 +514,7 @@ async def on_message(message):
         await bot.process_commands(message)
         return
     user_id = message.author.id
+    user_name = message.author.display_name
     now = datetime.now()
     if user_id in chat_cooldown:
         elapsed = (now - chat_cooldown[user_id]).total_seconds()
@@ -501,10 +533,24 @@ async def on_message(message):
             if row:
                 current_exp = row[0]
                 new_exp = current_exp + gain_exp
+                current_level, _, _ = calculate_level(current_exp)
+                new_level, _, _ = calculate_level(new_exp)
                 await db.execute(
                     "UPDATE attendance SET experience = ? WHERE user_id = ?", 
                     (new_exp, user_id)
                 )
+                if new_level > current_level:
+                    LC = bot.get_channel(lvl_channel)
+                    if isinstance(LC, TextChannel):
+                        embed = discord.Embed(
+                            title="🎉 [ 신용 등급 상승 ]",
+                            description=(
+                            f"{user_name} 님이 아지트에서 뼈 빠지게 당근을 캐낸 결과, "
+                            f"신용 등급이 **Lv.{new_level}**(으)로 상승했습니다!\n"
+                            f"💸 이제 블랙마켓에서 더 비싼 빚을 질 자격이 생겼군요. 계속 일하십시오! 🐰💼"),
+                            color = discord.Color.dark_purple()
+                        )
+                        await LC.send(embed=embed)
             else:
                 await db.execute(
                     "INSERT OR REPLACE INTO attendance (user_id, nickname, last_attendance, streak, total_count, experience) VALUES (?, ?, ?, ?, ?, ?)", 
@@ -515,24 +561,27 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-@tasks.loop(hours=24)
+@tasks.loop(time = reset_time)
 async def monthly_reset_loop():
     now = datetime.now()
     
     if now.day == 1:
-        async with aiosqlite.connect(DB_NAME) as db:
-            # 방식 1: 출석 관련 기록만 초기화 (경험치는 보존 - 추천)
-            await db.execute("""
-                UPDATE attendance 
-                SET streak = 0, 
+        try:
+            async with aiosqlite.connect(DB_NAME) as db:
+                # 방식 1: 출석 관련 기록만 초기화 (경험치는 보존 - 추천)
+                await db.execute("""
+                    UPDATE attendance 
+                    SET streak = 0, 
                     total_count = 0, 
                     last_attendance = NULL
-            """)
+                """)
             
             await db.commit()
-        AC = bot.get_channel(attendance_channel)
-        if isinstance(AC, TextChannel):
-            await AC.send(f"📅 {now.month}월 1일: 출석 데이터가 초기화되었습니다.")
+            channel = bot.get_channel(attendance_channel)
+            if isinstance(channel, TextChannel):
+                await channel.send(f"📅 {now.year}년 {now.month}월 1일: 출석 데이터가 초기화되었습니다.")
+        except Exception as e :
+            print(f"월별 초기화 중 오류 발생: {e}")
 
 @bot.tree.command(name="월별기록", description="달별 출석 횟수를 확인합니다.")
 async def monthly_history(interaction: discord.Interaction, user: Optional[discord.Member] = None):
